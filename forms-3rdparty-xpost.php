@@ -5,11 +5,12 @@ Plugin Name: Forms-3rdparty Xml Post
 Plugin URI: https://github.com/zaus/forms-3rdparty-xpost
 Description: Converts submission from <a href="http://wordpress.org/plugins/forms-3rdparty-integration/">Forms 3rdparty Integration</a> to xml, add headers
 Author: zaus, leadlogic
-Version: 0.2
+Version: 0.3
 Author URI: http://drzaus.com
 Changelog:
 	0.1 init
 	0.2 nesting
+	0.3 doesn't need to be xml to nest, wrap
 */
 
 
@@ -53,15 +54,9 @@ class Forms3rdpartyXpost {
 			}
 		}
 
-		// are we sending this form as xml?
-		if(!isset($service[self::PARAM_ASXML]) || 'true' != $service[self::PARAM_ASXML]) return $args;
-
 		// nest tags
 		$args['body'] = $this->nest($args['body']);
 
-		// shorthand
-		$body = &$args['body'];
-		
 		### _log('post-args nested', $body);
 		
 		// do we have a custom wrapper?
@@ -75,9 +70,13 @@ class Forms3rdpartyXpost {
 		// loop through wrapper to wrap
 		$root = array_pop($wrapper); // save terminal wrapper as root
 		foreach($wrapper as $el) {
-			$body = array($el => $body);
+			$args['body'] = array($el => $args['body']);
 		}
-		$body = $this->simple_xmlify($body, null, $root)->asXML();
+
+		// are we sending this form as xml?
+		if(isset($service[self::PARAM_ASXML]) && 'true' == $service[self::PARAM_ASXML])
+			$args['body'] = $this->simple_xmlify($args['body'], null, $root)->asXML();
+		else $args['body'] = array($root => $args['body']);
 		
 		### _log('xmlified body', $body, 'args', $args);
 
