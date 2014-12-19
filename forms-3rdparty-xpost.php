@@ -5,13 +5,14 @@ Plugin Name: Forms-3rdparty Xml Post
 Plugin URI: https://github.com/zaus/forms-3rdparty-xpost
 Description: Converts submission from <a href="http://wordpress.org/plugins/forms-3rdparty-integration/">Forms 3rdparty Integration</a> to xml, json, add headers
 Author: zaus, leadlogic
-Version: 0.4.2
+Version: 0.4.3
 Author URI: http://drzaus.com
 Changelog:
 	0.1 init
 	0.2 nesting
 	0.3 doesn't need to be xml to nest, wrap
 	0.4 fix per github issue #3
+	0.4.3 post json + content-type defaults
 */
 
 
@@ -38,7 +39,6 @@ class Forms3rdpartyXpost {
 	const PARAM_SEPARATOR = '/';
 
 
-	
 	public function post_args($args, $service, $form) {
 
 		// scan the post args for meta instructions
@@ -73,29 +73,46 @@ class Forms3rdpartyXpost {
 		// are we sending this form as xml?
 		// make sure to check in either case if $root was set which,
 		// if you're sending XML, should be -- otherwise it doesn't make much sense as default post
-		if(isset($service[self::PARAM_ASXML]))
-		switch($service[self::PARAM_ASXML]) {
-			// retain legacy < 0.4.2 support for original value ('true') vs desired 'xml'
-			case 'true':
-			case 'xml':
-				$args['body'] = $this->simple_xmlify($args['body'], null, isset($root) ? $root : 'post')->asXML();
-				break;
-			case 'json':
-				if(isset($root))
-					$args['body'] = array($root => $args['body']);
-				
-				// just in case...although they pretty much need php 5.3 anyway
-				if(function_exists('json_encode'))
-					$args['body'] = json_encode($args['body']);
-				break;
-			default:
-				if(isset($root))
-					$args['body'] = array($root => $args['body']);
-				break;
-		}
+		if(isset($service[self::PARAM_ASXML])) {
+			$format = $service[self::PARAM_ASXML];
+
+			switch($format) {
+				// retain legacy < 0.4.2 support for original value ('true') vs desired 'xml'
+				case 'true':
+					$format = 'xml'; // correct so consolidated handling below works
+				case 'xml':
+					$args['body'] = $this->simple_xmlify($args['body'], null, isset($root) ? $root : 'post')->asXML();
+					break;
+				case 'json':
+					if(isset($root))
+						$args['body'] = array($root => $args['body']);
+					
+					// just in case...although they pretty much need php 5.3 anyway
+					if(function_exists('json_encode')) {
+						$args['body'] = json_encode($args['body']);
+					}
+					break;
+				default:
+					if(isset($root))
+						$args['body'] = array($root => $args['body']);
+					break;
+			}
+
+			// also set appropriate headers if not already
+			switch($format) {
+				case 'xml':
+				case 'json':
+					if(!isset($args['headers'])) $args['headers'] = array();
+					if(!isset($args['headers']['Content-Type'])) $args['headers']['Content-Type'] = 'application/' . $format;
+					break;
+			}
+
+		}//	if isset service paramxml
 		
+
 		### _log('xmlified body', $body, 'args', $args);
 
+		// don't need to wrap with filter -- user can just hook to same forms-integration filter with lower priority
 		return $args;
 	}//--	fn	post_args
 
