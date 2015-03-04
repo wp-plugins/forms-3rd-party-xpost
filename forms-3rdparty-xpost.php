@@ -5,7 +5,7 @@ Plugin Name: Forms-3rdparty Xml Post
 Plugin URI: https://github.com/zaus/forms-3rdparty-xpost
 Description: Converts submission from <a href="http://wordpress.org/plugins/forms-3rdparty-integration/">Forms 3rdparty Integration</a> to xml, json, add headers
 Author: zaus, leadlogic
-Version: 0.4.3
+Version: 0.5
 Author URI: http://drzaus.com
 Changelog:
 	0.1 init
@@ -13,6 +13,7 @@ Changelog:
 	0.3 doesn't need to be xml to nest, wrap
 	0.4 fix per github issue #3
 	0.4.3 post json + content-type defaults
+	0.5 multipart style vs form/url; allow root trick
 */
 
 
@@ -36,7 +37,7 @@ class Forms3rdpartyXpost {
 	const PARAM_HEADER = 'xpost-header';
 	const PARAM_ASXML = 'as-xpost';
 	const PARAM_WRAPPER = 'xpost-wrapper';
-	const PARAM_SEPARATOR = '/';
+	const PARAM_SEPARATOR = '/'; // darn...interferes with actual xml in root; use '\' workaround later
 
 
 	public function post_args($args, $service, $form) {
@@ -76,30 +77,53 @@ class Forms3rdpartyXpost {
 		if(isset($service[self::PARAM_ASXML])) {
 			$format = $service[self::PARAM_ASXML];
 
+			// wrap
 			switch($format) {
 				// retain legacy < 0.4.2 support for original value ('true') vs desired 'xml'
 				case 'true':
 					$format = 'xml'; // correct so consolidated handling below works
+				// don't wrap
 				case 'xml':
-					$args['body'] = $this->simple_xmlify($args['body'], null, isset($root) ? $root : 'post')->asXML();
+					break;
+				default:
+					if(isset($root)) $args['body'] = array($root => $args['body']);
+					break;
+			}// wrap root
+
+			// process nodes
+			switch($format) {
+				case 'true':
+				case 'xml':
+					// sorry for the sad hack to allow actual xml in root element -- https://github.com/zaus/forms-3rdparty-xpost/issues/8#issuecomment-77098615
+					$args['body'] = $this->simple_xmlify($args['body'], null, isset($root) ? str_replace('\\', '/', $root) : 'post')->asXML();
+					break;
+				case 'multipart':
+					// via https://gist.github.com/UmeshSingla/40b5f7b0fb7e0ade0438
+					$boundary = wp_generate_password( 24 );
+
+					if(!isset($args['headers'])) $args['headers'] = array();
+					if(!isset($args['headers']['Content-Type'])) $args['headers']['Content-Type'] = 'multipart/form-data; boundary=' . $boundary;
+
+					// not sure how wrap affects things...
+					
+					$args['body'] = $this->as_multipart($args['body'], $boundary);
 					break;
 				case 'json':
-					if(isset($root))
-						$args['body'] = array($root => $args['body']);
-					
 					// just in case...although they pretty much need php 5.3 anyway
 					if(function_exists('json_encode')) {
 						$args['body'] = json_encode($args['body']);
 					}
 					break;
+				case 'x-www-form-urlencoded':
+					$args['body'] = http_build_query($args['body']);
+				//case 'form':
 				default:
-					if(isset($root))
-						$args['body'] = array($root => $args['body']);
 					break;
 			}
 
 			// also set appropriate headers if not already
 			switch($format) {
+				case 'x-www-form-urlencoded':
 				case 'xml':
 				case 'json':
 					if(!isset($args['headers'])) $args['headers'] = array();
@@ -146,7 +170,11 @@ class Forms3rdpartyXpost {
 	function simple_xmlify($arr, SimpleXMLElement $root = null, $el = 'x') {
 		// could use instead http://stackoverflow.com/a/1397164/1037948
 
-		if(!isset($root) || null == $root) $root = new SimpleXMLElement('<' . $el . '/>');
+		if(!isset($root) || null == $root) {
+			// xml hack -- if not, self-close
+			if(false === strpos($el, '/')) $el = "<$el/>";
+			$root = new SimpleXMLElement($el);
+		}
 
 		if(is_array($arr)) {
 			foreach($arr as $k => $v) {
@@ -165,6 +193,22 @@ class Forms3rdpartyXpost {
 		return $root;
 	}//--	fn	simple_xmlify
 
+	function as_multipart($post_fields, $boundary) {
+		// https://gist.github.com/UmeshSingla/40b5f7b0fb7e0ade0438
+		// http://stackoverflow.com/questions/4238809/example-of-multipart-form-data
+		$payload = '';
+		foreach ( $post_fields as $name => $value ) {
+			$payload .= <<<ENDFIELD
+--$boundary
+Content-Disposition: form-data; name="$name"
+
+$value
+
+ENDFIELD;
+		}
+		return $payload;
+	}//--	fn	as_multipart
+
 
 	// not used...here just in case we want inline help
 	public function service_metabox($P, $entity) {
@@ -176,7 +220,7 @@ class Forms3rdpartyXpost {
 			
 			<div class="description-body inside">
 
-				<p class="description"><?php _e('Configure how to transform service post body into XML, and/or set headers.', $P) ?></p>
+				<p class="description"><?php _e('Configure how to transform service post body into alternate format, and/or set headers.', $P) ?></p>
 				<p class="description"><?php _e('Note: you may also specify these values per service as &quot;special&quot; mapped values -- see each field for instructions.', $P) ?></p>
 
 				
@@ -195,7 +239,9 @@ class Forms3rdpartyXpost {
 				'form' => 'Form',
 				/* key should be 'xml', but 'true' for legacy support */
 				'true' => 'XML',
-				'json' => 'JSON'
+				'json' => 'JSON',
+				'multipart' => 'Multipart', // github issue #6
+				'x-www-form-urlencoded' => 'URL' // this is really the same as 'form'...
 			);
 	}
 
@@ -203,7 +249,7 @@ class Forms3rdpartyXpost {
 		?>
 		<fieldset><legend><span><?php _e('Xml Post'); ?></span></legend>
 			<div class="inside">
-				<p class="description"><?php _e('Configure how to transform service post body into XML, and/or set headers.', $P) ?></p>
+				<p class="description"><?php _e('Configure how to transform service post body into alternate format, and/or set headers.', $P) ?></p>
 				<p class="description"><?php _e('Leave any field blank to ignore it.', $P) ?></p>
 
 				<?php $field = self::PARAM_ASXML; ?>
@@ -214,13 +260,14 @@ class Forms3rdpartyXpost {
 							<option value="<?php echo esc_attr($val), '"'; selected($entity[$field], $val) ?>><?php _e($lbl, $P) ?></option>
 						<?php endforeach ?>
 					</select>
-					<em class="description"><?php _e('Should service transform post body to json or xml?  Default is "form" (unchanged).', $P);?></em>
+					<em class="description"><?php _e('Should service transform post body format?  Default is "form" (unchanged), and "url" is essentially the same.', $P);?></em>
 				</div>
 				<?php $field = self::PARAM_WRAPPER; ?>
 				<div class="field">
 					<label for="<?php echo $field, '-', $eid ?>"><?php _e('Xml Root Element(s)', $P); ?></label>
 					<input id="<?php echo $field, '-', $eid ?>" type="text" class="text" name="<?php echo $P, '[', $eid, '][', $field, ']'?>" value="<?php echo isset($entity[$field]) ? esc_attr($entity[$field]) : 'post'?>" />
-					<em class="description"><?php _e('Wrap contents all xml-transformed posts with this root element.  You may specify more than one by separating names with forward-slash', $P);?> (<code>/</code>).</em>
+					<em class="description"><?php _e('Wrap contents all xml-transformed posts with this root element.  You may specify more than one by separating names with forward-slash', $P);?> (<code>/</code>), e.g. <code>Root/Child1/Child2</code>.</em>
+					<em class="description"><?php echo sprintf(__('You may also enter xml prolog and/or xml, but you have to "escape" forward-slash as a backslash: %s vs %s', $P), '<code>&lt;Root&gt;&lt;Child attr=&quot;http:\\\\url.com&quot;&gt;&lt\\Child&gt;&lt;\\Root&gt;</code>', '<code>&lt;Root&gt;&lt;Child attr=&quot;http://url.com&quot;&gt;&lt/Child&gt;&lt;Root&gt;</code>');?></em>
 				</div>
 				<?php $field = self::PARAM_HEADER; ?>
 				<div class="field">
